@@ -1,0 +1,5 @@
+[functions.check_caps_proxy]
+enabled = true
+verify_jwt = false
+import_map = "./functions/check_caps_proxy/deno.json"
+entrypoint = "./functions/check_caps_proxy/index.ts"

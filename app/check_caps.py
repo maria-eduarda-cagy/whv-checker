@@ -1,19 +1,15 @@
 import os
-import json
-import time
 from typing import Dict, Optional
+
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+from .db import SupabaseClient
+from .notify import TelegramNotifier
 from .parser import parse_country_status
 
-
-STATE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "state.json")
-SOURCE_URL = "https://immi.homeaffairs.gov.au/what-we-do/whm-program/status-of-country-caps"
-TARGET_COUNTRY = "Brazil"
-
-
-def _session() -> requests.Session:
+def _session_with_retries() -> requests.Session:
     s = requests.Session()
     retry = Retry(total=2, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504], allowed_methods=["GET"])
     adapter = HTTPAdapter(max_retries=retry)
@@ -30,81 +26,83 @@ def _session() -> requests.Session:
     return s
 
 
-def _load_state() -> Dict[str, Optional[str]]:
-    if not os.path.exists(STATE_PATH):
-        return {"last_status": None, "last_checked_at": None, "last_notified_status": None}
-    with open(STATE_PATH, "r", encoding="utf-8") as f:
-        try:
-            return json.load(f)
-        except Exception:
-            return {"last_status": None, "last_checked_at": None, "last_notified_status": None}
+def run_check() -> Dict[str, Optional[str]]:
+    source_url = os.environ.get(
+        "SOURCE_URL",
+        "https://immi.homeaffairs.gov.au/what-we-do/whm-program/status-of-country-caps",
+    )
+    target_country = os.environ.get("TARGET_COUNTRY", "Brazil")
+    session = _session_with_retries()
 
-
-def _save_state(state: Dict[str, Optional[str]]) -> None:
-    with open(STATE_PATH, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-
-
-def _normalize(s: Optional[str]) -> Optional[str]:
-    if s is None:
-        return None
-    t = s.strip().lower().replace("*", "")
-    if "open" in t:
-        return "open"
-    if "paused" in t or "pause" in t:
-        return "paused"
-    if "closed" in t or "close" in t:
-        return "closed"
-    return None
-
-
-def send_telegram(status: str, timestamp_iso: str) -> bool:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
-        print("Aviso: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID ausentes, nenhuma notificação enviada")
-        return False
-    text = f"Brazil WHV 462 status: {status}\nTime: {timestamp_iso}\nLink: {SOURCE_URL}"
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text}
+    html = None
+    fetch_error = None
     try:
-        r = requests.post(url, json=payload, timeout=20)
-        if r.ok:
-            return True
-        print(f"Erro Telegram: {r.status_code} {r.text}")
-        return False
-    except Exception as e:
-        print(f"Erro Telegram: {e}")
-        return False
-
-
-def main() -> int:
-    state = _load_state()
-    session = _session()
-    try:
-        resp = session.get(SOURCE_URL, timeout=10)
+        resp = session.get(source_url, timeout=10)
         resp.raise_for_status()
         html = resp.text
     except Exception as e:
-        print(f"Erro HTTP: {e}")
-        return 1
-    status, raw, err = parse_country_status(html, TARGET_COUNTRY)
-    if err or not status:
-        print(f"Erro parsing: {err or 'status vazio'}")
-        return 1
-    status = _normalize(status)
-    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    print(f"Status atual: {status}")
+        fetch_error = f"HTTP error: {e}"
+
+    status, raw_excerpt, parse_error = (None, None, None)
+    if html:
+        status, raw_excerpt, parse_error = parse_country_status(html, target_country)
+
+    # Required for global dedupe across GitHub Actions and Supabase Scheduler.
+    sb = SupabaseClient.from_env()
+    sb.insert_status_check(
+        country=target_country,
+        status=status,
+        source_url=source_url,
+        raw_excerpt=raw_excerpt,
+        error=parse_error or fetch_error,
+    )
+
+    if fetch_error or parse_error or not status:
+        return {
+            "status": status,
+            "action": "logged_error",
+            "error": parse_error or fetch_error or "status_empty",
+            "mode": "live",
+        }
+
+    last = sb.get_last_state(target_country)
+    previous_status = last["status"] if last and "status" in last else None
+    last_notified_status = last["last_notified_status"] if last else None
+
+    sb.upsert_last_state(target_country, status, last_notified_status=last_notified_status)
+
     notified = False
-    if status == "open" and state.get("last_notified_status") != "open":
-        notified = send_telegram(status, ts)
-        if notified:
-            state["last_notified_status"] = "open"
-    state["last_status"] = status
-    state["last_checked_at"] = ts
-    _save_state(state)
-    print(f"Notificou: {str(notified).lower()}")
-    return 0
+    provider = None
+    provider_message_id = None
+    if status == "open" and (previous_status != "open" or last_notified_status != "open"):
+        notifier = TelegramNotifier.from_env()
+        provider, provider_message_id = notifier.send_open_alert(target_country, source_url, status)
+        notified = True
+        sb.insert_notification(
+            country=target_country,
+            status=status,
+            recipient=notifier.chat_id,
+            provider=provider,
+            provider_message_id=provider_message_id,
+        )
+        sb.upsert_last_state(target_country, status, last_notified_status="open")
+
+    return {
+        "status": status,
+        "previous_status": previous_status,
+        "changed": str(previous_status != status).lower(),
+        "notified": str(notified).lower(),
+        "provider": provider,
+        "provider_message_id": provider_message_id,
+        "raw_excerpt": raw_excerpt,
+        "mode": "live",
+    }
+
+
+def main() -> int:
+    result = run_check()
+    print(result)
+    return 0 if result.get("action") != "logged_error" else 1
 
 
 if __name__ == "__main__":

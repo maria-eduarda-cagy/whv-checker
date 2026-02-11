@@ -1,115 +1,105 @@
-# WHV 462 Country Caps Monitor — GitHub Actions + Telegram
+# WHV 462 Country Caps Monitor
 
-## Objective
+Monitor the Australian WHV 462 country caps page and notify on Telegram when **Brazil** changes to `open`.
 
-Monitor the “Status of country caps” page of the Australian **Work and Holiday Visa (subclass 462)** program and **send a Telegram notification when Brazil’s status changes to `open`**, checking the site every **15 minutes** via **GitHub Actions**, persisting simple state in `state.json` inside the repository.
+This project runs with **two schedulers in parallel**:
+- GitHub Actions (`*/15`)
+- Supabase Scheduler (`*/15`, via Edge Function proxy)
 
-Monitored source:
+Both schedulers call the same checker logic and share state in Supabase, so deduplication is global.
 
-* [https://immi.homeaffairs.gov.au/what-we-do/whm-program/status-of-country-caps](https://immi.homeaffairs.gov.au/what-we-do/whm-program/status-of-country-caps)
+## Architecture
 
----
+1. Checker (`app/check_caps.py`)
+- Fetches source HTML
+- Parses Brazil status
+- Persists checks in Supabase
+- Sends Telegram only on transition/dedupe condition
 
-## Quickstart
+2. HTTP worker (`app/server.py`)
+- Exposes `POST /check` (for Supabase proxy)
+- Optional bearer auth via `WORKER_AUTH`
 
-### Run locally
+3. Supabase Edge Function (`supabase/functions/check_caps_proxy/index.ts`)
+- Calls deployed worker URL (`WORKER_URL/check`)
+- Used by Supabase Scheduler
+
+4. Shared state in Supabase tables
+- `country_last_state`
+- `status_checks`
+- `notifications`
+
+## Local run
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt
-python -m app.check_caps
+SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... python -m app.check_caps
 ```
 
-### GitHub Actions schedule
-- Workflow: .github/workflows/whv-checker.yml
-- Triggers:
-  - schedule: */15 * * * * (UTC)
-  - workflow_dispatch (manual)
-- Permissions: contents: write (to commit state.json when it changes)
+Run HTTP worker:
 
-### Telegram configuration
-- Create a bot with BotFather and obtain TELEGRAM_BOT_TOKEN
-- Get TELEGRAM_CHAT_ID (e.g., from @userinfobot or via API)
-- Set repository secrets:
-  - TELEGRAM_BOT_TOKEN
-  - TELEGRAM_CHAT_ID
-
-### State persistence
-- File: state.json at repo root
-- Keys:
-  - last_status
-  - last_checked_at (ISO)
-  - last_notified_status
-- Updated every run; committed by the workflow only if changed.
-
----
-
-## High-level overview
-
-### Components
-
-1. **Checker (Python)**
-   - fetches the target webpage (HTTP GET)
-   - parses the status for Brazil
-   - updates `state.json`
-   - sends Telegram only on transition to `open`
-
-2. **Scheduler (GitHub Actions)**
-   - runs every 15 minutes (UTC) and on manual dispatch
-   - commits `state.json` when modified
-
----
-
-## End-to-end data flow
-
-1. **GitHub Actions** triggers execution every 15 minutes.
-2. **Python Checker** performs HTTP GET to the target URL.
-3. **HTML Parser** extracts Brazil’s status.
-4. Checker compares with `state.json`.
-5. If status changed, updates `state.json`.
-6. If new status is `open` and not previously notified, sends Telegram.
-
----
-
-## Architecture diagram (Mermaid)
-
-```mermaid
-flowchart TD
-  A[GitHub Actions<br/>*/15 * * * *] --> B[Python Checker<br/>app.check_caps]
-  B --> C[HTTP GET<br/>immi.homeaffairs.gov.au]
-  C --> D[HTML Parser<br/>Brazil status]
-  D --> E[Read/Write<br/>state.json]
-  E --> F{Status changed?}
-  F -- No --> G[Commit if needed]
-  F -- Yes --> H{Is OPEN?}
-  H -- No --> G
-  H -- Yes --> I[Send Telegram]
-  I --> G
+```bash
+uvicorn app.server:app --host 0.0.0.0 --port 8000
 ```
 
----
+Container run:
 
-## Notification rules
+```bash
+docker build -t whv-checker .
+docker run -p 8000:8000 --env-file .env whv-checker
+```
 
-Send Telegram only if:
-- current_status == "open" and
-- last_notified_status != "open"
+## GitHub Actions scheduler
 
----
+Workflow: `/Users/mariacagy/whv-checker/.github/workflows/whv-checker.yml`
 
-## Telegram setup
-1. Create a bot with BotFather → get TELEGRAM_BOT_TOKEN
-2. Find TELEGRAM_CHAT_ID
-3. Add GitHub repository secrets:
-   - TELEGRAM_BOT_TOKEN
-   - TELEGRAM_CHAT_ID
+Required GitHub secrets:
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
 
----
+Optional GitHub secrets:
+- `SOURCE_URL` (defaults to immi URL)
+- `TARGET_COUNTRY` (defaults to `Brazil`)
 
-## Troubleshooting
+## Supabase setup
 
-* Schedule runs in the default branch and in UTC
-* Ensure `permissions: contents: write` in workflow
-* Check that `state.json` exists and is tracked
-* Missing Telegram secrets doesn’t break runs; only logs a warning
+1. Link project and apply migrations:
+
+```bash
+supabase link --project-ref <PROJECT_REF>
+supabase db push
+```
+
+2. Deploy Edge Function:
+
+```bash
+supabase functions deploy check_caps_proxy
+```
+
+3. Set Edge Function secrets:
+
+```bash
+supabase secrets set WORKER_URL="https://<your-worker-host>" WORKER_AUTH="<your-token>"
+```
+
+4. Configure Supabase Scheduler job:
+- Function: `check_caps_proxy`
+- Method: `POST`
+- Cron: `*/15 * * * *`
+
+## Dedupe rule
+
+Telegram is sent only when:
+- `status == open`, and
+- previous status is not `open` OR `last_notified_status` is not `open`
+
+After successful send, `last_notified_status` becomes `open`.
+
+## Notes
+
+- If Supabase is unavailable, the checker fails (by design) to prevent duplicate notifications from stateless execution.
+- The old `state.json` strategy is no longer the source of truth.

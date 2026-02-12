@@ -3,8 +3,8 @@
 Monitor the Australian WHV 462 country caps page and notify on Telegram when **Brazil** changes to `open`.
 
 This project runs with **two schedulers in parallel**:
-- GitHub Actions (`*/15`)
-- Supabase Scheduler (`*/15`, via Edge Function proxy)
+- GitHub Actions (`*/5`)
+- Supabase Scheduler (`*/5`, via Edge Function proxy)
 
 Both schedulers call the same checker logic and share state in Supabase, so deduplication is global.
 
@@ -89,7 +89,7 @@ supabase secrets set WORKER_URL="https://<your-worker-host>" WORKER_AUTH="<your-
 4. Configure Supabase Scheduler job:
 - Function: `check_caps_proxy`
 - Method: `POST`
-- Cron: `*/15 * * * *`
+- Cron: `*/5 * * * *`
 
 ## Dedupe rule
 
@@ -122,3 +122,55 @@ python -m app.test_supabase_cron
 The script invokes `check_caps_proxy` with `force_notify_test`, then confirms:
 - a new row in `status_checks`
 - a new Telegram row in `notifications`
+
+## Operational tests
+
+1. Local logic test (`open` transition):
+
+```bash
+PYTHONPATH=. .venv/bin/pytest -q tests/test_check_caps.py -k transition_to_open
+```
+
+2. Direct worker smoke test (bypasses Supabase):
+
+```bash
+curl -i -X POST "https://whv-checker.onrender.com/check" \
+  -H "Content-Type: application/json" \
+  -d '{"force_notify_test":true,"test_notify_token":"<TEST_NOTIFY_TOKEN>"}'
+```
+
+Expected:
+- HTTP `200`
+- JSON with `"notified":"true"`
+
+3. Supabase path smoke test (Edge Function -> Worker -> Telegram):
+
+```bash
+SUPABASE_URL="https://<project-ref>.supabase.co" \
+SUPABASE_SERVICE_ROLE_KEY="<service-role-key>" \
+SUPABASE_PROJECT_REF="<project-ref>" \
+TEST_NOTIFY_TOKEN="<TEST_NOTIFY_TOKEN>" \
+python -m app.test_supabase_cron
+```
+
+Expected:
+- `status_checks updated: True`
+- `telegram notification recorded: True`
+- `PASS`
+
+4. If test 3 fails with HTTP 500, validate secrets:
+
+```bash
+supabase secrets list --project-ref <project-ref>
+```
+
+At minimum in Supabase:
+- `WORKER_URL`
+- `WORKER_AUTH` (optional; can be empty if worker auth disabled)
+
+At minimum in worker runtime (Render):
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- `TEST_NOTIFY_TOKEN`

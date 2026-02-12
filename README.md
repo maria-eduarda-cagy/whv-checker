@@ -18,7 +18,6 @@ Both schedulers call the same checker logic and share state in Supabase, so dedu
 
 2. HTTP worker (`app/server.py`)
 - Exposes `POST /check` (for Supabase proxy)
-- Optional bearer auth via `WORKER_AUTH`
 
 3. Supabase Edge Function (`supabase/functions/check_caps_proxy/index.ts`)
 - Calls deployed worker URL (`WORKER_URL/check`)
@@ -35,7 +34,11 @@ Both schedulers call the same checker logic and share state in Supabase, so dedu
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt
-SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... python -m app.check_caps
+SUPABASE_URL=... 
+SUPABASE_SERVICE_ROLE_KEY=... 
+TELEGRAM_BOT_TOKEN=... 
+TELEGRAM_CHAT_ID=... 
+python -m app.check_caps
 ```
 
 Run HTTP worker:

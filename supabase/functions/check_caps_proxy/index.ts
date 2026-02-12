@@ -1,13 +1,5 @@
-// Function: check_caps_proxy
-// Setup (CLI):
-// - supabase secrets set WORKER_URL="https://whv-worker.onrender.com" WORKER_AUTH="<token>"
-// - supabase functions deploy check_caps_proxy
-//
-// Cron (every 15 minutes):
-// - Supabase Dashboard → Edge Functions → Scheduling → New job
-//   Function: check_caps_proxy
-//   Method: POST
-//   Cron: */15 * * * *
+
+
 
 import "@supabase/functions-js/edge-runtime.d.ts";
 // Declarations to satisfy non-Deno TS linters
@@ -15,7 +7,6 @@ declare const Deno: any;
 type HeadersInit = Record<string, string>;
 
 const WORKER_URL: string = Deno?.env?.get("WORKER_URL") ?? "";
-const WORKER_AUTH: string = Deno?.env?.get("WORKER_AUTH") ?? "";
 
 function buildWorkerUrl(base: string): string {
   const cleaned = base.replace(/\/+$/, "");
@@ -36,9 +27,6 @@ Deno.serve(async (req: any) => {
     }
 
     const headers: HeadersInit = { "Content-Type": "application/json" };
-    if (WORKER_AUTH) {
-      headers["Authorization"] = `Bearer ${WORKER_AUTH}`;
-    }
 
     const url = buildWorkerUrl(WORKER_URL);
     console.log("Proxy POST to:", url);

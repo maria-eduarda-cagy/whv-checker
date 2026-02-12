@@ -1,9 +1,10 @@
 from bs4 import BeautifulSoup
+import os
 import re
 from typing import Optional, Tuple
 
-SOURCE_URL = "https://immi.homeaffairs.gov.au/what-we-do/whm-program/status-of-country-caps"
-TARGET_COUNTRY = "Brazil"
+SOURCE_URL = os.environ.get("SOURCE_URL")
+TARGET_COUNTRY = os.environ.get("TARGET_COUNTRY")
 
 
 def normalize_status(text: str) -> Optional[str]:
@@ -48,4 +49,4 @@ def parse_country_status(html: str, country: str) -> Tuple[Optional[str], Option
 
 
 def parse_brazil_status(html: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    return parse_country_status(html, "Brazil")
+    return parse_country_status(html, TARGET_COUNTRY)

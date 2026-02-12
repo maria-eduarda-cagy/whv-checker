@@ -19,7 +19,10 @@ class TelegramNotifier:
 
     def send_open_alert(self, country: str, source_url: str, status: str) -> Tuple[str, Optional[str]]:
         text = f"{country} WHV 462 status: {status}\nLink: {source_url}"
-        return self._send_text(text)
+        provider, message_id = self._send_text(text)
+        login_url = os.environ.get("LOGIN_URL")
+        self._send_text(login_url)
+        return provider, message_id
 
     def send_test_alert(self, country: str, source_url: str, status: str, test_run_id: str) -> Tuple[str, Optional[str]]:
         text = (

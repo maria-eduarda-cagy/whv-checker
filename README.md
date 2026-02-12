@@ -103,3 +103,22 @@ After successful send, `last_notified_status` becomes `open`.
 
 - If Supabase is unavailable, the checker fails (by design) to prevent duplicate notifications from stateless execution.
 - The old `state.json` strategy is no longer the source of truth.
+
+## Cron test (Supabase -> Worker -> Telegram)
+
+Set a worker env var:
+- `TEST_NOTIFY_TOKEN=<strong-random-token>`
+
+Run smoke test:
+
+```bash
+SUPABASE_URL=... \
+SUPABASE_SERVICE_ROLE_KEY=... \
+SUPABASE_PROJECT_REF=... \
+TEST_NOTIFY_TOKEN=... \
+python -m app.test_supabase_cron
+```
+
+The script invokes `check_caps_proxy` with `force_notify_test`, then confirms:
+- a new row in `status_checks`
+- a new Telegram row in `notifications`

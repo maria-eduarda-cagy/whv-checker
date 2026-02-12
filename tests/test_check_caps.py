@@ -40,6 +40,9 @@ class _Notifier:
     def send_open_alert(self, _country, _source_url, _status):
         return "telegram", "42"
 
+    def send_test_alert(self, _country, _source_url, _status, _test_run_id):
+        return "telegram", "99"
+
 
 def test_run_check_notifies_when_transition_to_open(monkeypatch):
     sb = _Sb({"status": "paused", "last_notified_status": "paused"})
@@ -67,3 +70,18 @@ def test_run_check_dedupes_when_already_notified_open(monkeypatch):
     assert result["status"] == "open"
     assert result["notified"] == "false"
     assert len(sb.notifications) == 0
+
+
+def test_run_check_force_notify_test_ignores_dedupe(monkeypatch):
+    sb = _Sb({"status": "open", "last_notified_status": "open"})
+    monkeypatch.setattr(check_caps, "_session_with_retries", lambda: _Session())
+    monkeypatch.setattr(check_caps, "parse_country_status", lambda _html, _country: ("open", "raw", None))
+    monkeypatch.setattr(check_caps.SupabaseClient, "from_env", classmethod(lambda cls: sb))
+    monkeypatch.setattr(check_caps.TelegramNotifier, "from_env", classmethod(lambda cls: _Notifier()))
+
+    result = check_caps.run_check(force_notify_test=True)
+
+    assert result["status"] == "open"
+    assert result["notified"] == "true"
+    assert result["test_mode"] == "true"
+    assert len(sb.notifications) == 1

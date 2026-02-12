@@ -43,10 +43,13 @@ Deno.serve(async (req: any) => {
     const url = buildWorkerUrl(WORKER_URL);
     console.log("Proxy POST to:", url);
 
+    const incomingBody = await req.text();
+    const body = incomingBody && incomingBody.trim().length > 0 ? incomingBody : "{}";
+
     const res = await fetch(url, {
       method: "POST",
       headers,
-      body: "{}",
+      body,
     });
 
     const contentType = res.headers.get("Content-Type") || "application/json";

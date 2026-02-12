@@ -19,6 +19,17 @@ class TelegramNotifier:
 
     def send_open_alert(self, country: str, source_url: str, status: str) -> Tuple[str, Optional[str]]:
         text = f"{country} WHV 462 status: {status}\nLink: {source_url}"
+        return self._send_text(text)
+
+    def send_test_alert(self, country: str, source_url: str, status: str, test_run_id: str) -> Tuple[str, Optional[str]]:
+        text = (
+            f"[TESTE SUPABASE CRON {test_run_id}]\n"
+            f"{country} WHV 462 status: {status}\n"
+            f"Link: {source_url}"
+        )
+        return self._send_text(text)
+
+    def _send_text(self, text: str) -> Tuple[str, Optional[str]]:
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         payload = {"chat_id": self.chat_id, "text": text}
         r = requests.post(url, json=payload, timeout=20)

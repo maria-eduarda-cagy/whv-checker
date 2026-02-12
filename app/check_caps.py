@@ -1,4 +1,5 @@
 import os
+import uuid
 from typing import Dict, Optional
 
 import requests
@@ -26,7 +27,7 @@ def _session_with_retries() -> requests.Session:
     return s
 
 
-def run_check() -> Dict[str, Optional[str]]:
+def run_check(force_notify_test: bool = False) -> Dict[str, Optional[str]]:
     source_url = os.environ.get(
         "SOURCE_URL",
         "https://immi.homeaffairs.gov.au/what-we-do/whm-program/status-of-country-caps",
@@ -74,7 +75,19 @@ def run_check() -> Dict[str, Optional[str]]:
     notified = False
     provider = None
     provider_message_id = None
-    if status == "open" and (previous_status != "open" or last_notified_status != "open"):
+    if force_notify_test:
+        notifier = TelegramNotifier.from_env()
+        test_run_id = uuid.uuid4().hex[:8]
+        provider, provider_message_id = notifier.send_test_alert(target_country, source_url, status, test_run_id)
+        notified = True
+        sb.insert_notification(
+            country=target_country,
+            status=status,
+            recipient=notifier.chat_id,
+            provider=provider,
+            provider_message_id=provider_message_id,
+        )
+    elif status == "open" and (previous_status != "open" or last_notified_status != "open"):
         notifier = TelegramNotifier.from_env()
         provider, provider_message_id = notifier.send_open_alert(target_country, source_url, status)
         notified = True
@@ -96,6 +109,7 @@ def run_check() -> Dict[str, Optional[str]]:
         "provider_message_id": provider_message_id,
         "raw_excerpt": raw_excerpt,
         "mode": "live",
+        "test_mode": str(force_notify_test).lower(),
     }
 
 
